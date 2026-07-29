@@ -1,87 +1,96 @@
 from playwright.sync_api import sync_playwright
+import ddddocr
 import time
 
-# 内置登录页面HTML，不需要外部login.html
-HTML_CONTENT = """
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <title>登录页面</title>
-    <style>
-        .box{width:320px;margin:100px auto;}
-        .item{margin:12px 0;}
-        input{width:100%;padding:8px;box-sizing:border-box;font-size:16px;}
-        button{width:100%;padding:10px;background:#2266dd;color:#fff;border:none;font-size:16px;cursor:pointer;}
-    </style>
-</head>
-<body>
-<div class="box">
-    <h2>系统登录</h2>
-    <div class="item">
-        <input id="username" placeholder="用户名">
-    </div>
-    <div class="item">
-        <input id="password" placeholder="密码" type="password">
-    </div>
-    <div class="item">
-        <button onclick="login()">登录</button>
-    </div>
-</div>
-
-<script>
-function login(){
-    const name = document.getElementById('username').value;
-    const pwd = document.getElementById('password').value;
-    if(name === "111" && pwd === "222"){
-        alert("登录成功");
-    }else{
-        alert("登录失败");
-    }
-}
-</script>
-</body>
-</html>
-"""
-
-# ----------------测试数据 5组----------------
-test_data = [
-    ("111", "222"),    # 正确
-    ("111", "333"),    # 密码错误
-    ("222", "222"),    # 用户名错误
-    ("", ""),          # 空账号密码
-    ("111", "")        # 密码为空
+# 测试账号
+test_users = [
+    {"username": "111", "password": "222", "captcha": None},          # 账号错误、密码错误，自动识别验证码
+    {"username": "admin", "password": "111", "captcha": None},        # 正确账号、错误密码，自动识别验证码
+    {"username": "admin", "password": "  ", "captcha": None},        # 账号正确，密码全部空格，自动识别验证码
+    {"username": "  ", "password": "weilaikeji666", "captcha": None},# 账号全部空格，正确密码，自动识别验证码
+    {"username": "  ", "password": "  ", "captcha": None},           # 账号空格、密码空格，自动识别验证码
+    {"username": "", "password": "weilaikeji666", "captcha": None},  # 用户名为空，密码正确，自动识别验证码
+    {"username": "admin", "password": "", "captcha": None},            # 账号正确，密码为空，自动识别验证码
+    {"username": "", "password": "", "captcha": None},               # 账号空、密码空，自动识别验证码
+    {"username": "admin", "password": "weilaikeji666", "captcha": None},#账号密码全部正确，自动识别验证码
+    {"username": "admin", "password": "weilaikeji666", "captcha": ""},#账号密码正确，验证码为空字符串
+    {"username": "admin", "password": "weilaikeji666", "captcha": "aaaa"},#账号密码正确，输入错误4位验证码
+    {"username": "admin", "password": "weilaikeji666", "captcha": "  "},  #账号密码正确，验证码只输入空格
+    {"username": "", "password": "", "captcha": ""},                     #账号空、密码空、验证码为空
+    {"username": "  ", "password": "  ", "captcha": "  "},               #账号空格、密码空格、验证码空格
+    {"username": "admin", "password": "weilaikeji666", "captcha": "123"}, #账号密码正确，验证码3位（不足4位）
+    {"username": "admin", "password": "weilaikeji666", "captcha": "12345"},#账号密码正确，验证码5位（超过4位）
+    {"username": "", "password": "", "captcha": "9999"},                 #账号空、密码空，填写错误验证码
+    {"username": "  ", "password": "weilaikeji666", "captcha": "test"},   #账号空格，密码正确，错误验证码
+    {"username": " admin ", "password": "weilaikeji666", "captcha": None} #账号前后带空格，密码正确，自动识别验证码
 ]
 
-def run_login_test():
+
+ocr = ddddocr.DdddOcr(show_ad=False)
+login_url = "http://manager-v2-uat.baoanlailou.com/login"
+
+
+def get_captcha(page, max_retry=3):
+    """获取验证码，识别错误自动刷新重试"""
+    captcha_loc = page.locator(".sendCode img")
+    for retry in range(max_retry):
+        # 截图
+        img_bytes = captcha_loc.screenshot()
+        code = ocr.classification(img_bytes).strip()
+        print(f"第{retry+1}次识别结果：{code}")
+        # 判断必须4位字符
+        if len(code) == 4:
+            return code
+        # 识别失败，点击验证码刷新
+        captcha_loc.click()
+        time.sleep(0.8)
+    print("⚠️验证码多次识别失败，放弃本次登录")
+    return None
+
+
+def run_login(page, user_info):
+    username = user_info["username"]
+    password = user_info["password"]
+    input_captcha = user_info["captcha"]
+
+    print(f"\n======== 当前账号：{username} | 指定验证码：{input_captcha} ========")
+    page.goto(login_url)
+    page.wait_for_timeout(1500)
+
+    # 输入账号
+    page.locator('input[placeholder="请输入账号"]').fill(username)
+    time.sleep(0.5)
+    # 输入密码
+    page.locator('input[placeholder="请输入密码"]').fill(password)
+    time.sleep(0.5)
+
+    # 判断是否手动指定验证码
+    if input_captcha is None:
+        captcha_code = get_captcha(page)
+        if captcha_code is None:
+            return
+    else:
+        captcha_code = input_captcha
+
+    page.locator('input[placeholder="请输入验证码"]').fill(captcha_code)
+    time.sleep(0.8)
+
+    # 点击登录
+    page.locator(".btn").click()
+    page.wait_for_timeout(2500)
+    print(f"【{username}】登录操作执行完毕")
+    time.sleep(2)
+
+
+if __name__ == '__main__':
     with sync_playwright() as p:
+        # Jenkins运行请改为 headless=True
         browser = p.chromium.launch(headless=False)
-        page = browser.new_page()
-        page.set_content(HTML_CONTENT)
+        context = browser.new_context(ignore_https_errors=True)
+        page = context.new_page()
 
-        for index, (user, pwd) in enumerate(test_data, 1):
-            print(f"\n===== 执行第{index}组测试：用户名={user}，密码={pwd} =====")
-            # 填入账号密码
-            page.locator("#username").fill(user)
-            page.locator("#password").fill(pwd)
+        for user in test_users:
+            run_login(page, user)
 
-            dialog_msg = ""
-            # 捕获弹窗
-            def handle_dialog(dialog):
-                nonlocal dialog_msg
-                dialog_msg = dialog.message
-                print(f"弹窗信息：{dialog_msg}")
-                # 弹窗停留2秒再关闭
-                time.sleep(2)
-                dialog.accept()
-
-            page.once("dialog", handle_dialog)
-            page.locator("button").click()
-            # 留出足够时间等待弹窗处理完毕
-            page.wait_for_timeout(2500)
-
-        print("\n✅ 全部5组用例执行完毕，自动关闭浏览器")
         browser.close()
-
-if __name__ == "__main__":
-    run_login_test()
+        print("\n✅所有账号测试流程执行结束")
