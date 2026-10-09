@@ -1,85 +1,79 @@
-from playwright.sync_api import sync_playwright
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import ddddocr
+import base64
 import time
 
-short_url = "https://link.wtturl.cn/?target=https%3A%2F%2Fmanager-saas-uat.baoanlailou.com%2Flogin%3Fredirect%3D%252Findex&scene=im&aid=497858&lang=zh"
-target_username = "ptzh001"
-target_password = "admin123"
-
+# 初始化OCR
 ocr = ddddocr.DdddOcr(show_ad=False)
 
+# ==========Chrome中文配置==========
+options = webdriver.ChromeOptions()
+options.add_argument("--lang=zh-CN")
+options.add_experimental_option('prefs', {'intl.accept_languages': 'zh-CN,zh'})
+options.add_experimental_option("excludeSwitches", ["enable-automation"])
+options.add_experimental_option("useAutomationExtension", False)
 
-def get_captcha(page, max_retry=3):
-    captcha_loc = page.locator(".sendCode img")
-    captcha_loc.wait_for(timeout=15000)
-    for retry in range(max_retry):
-        try:
-            img_bytes = captcha_loc.screenshot(timeout=5000)
-            code = ocr.classification(img_bytes).strip()
-            print(f"第{retry+1}次识别验证码结果：{code}")
-            if len(code) == 4:
-                return code
-            captcha_loc.click(timeout=5000)
-            time.sleep(0.8)
-        except Exception as e:
-            print(f"验证码识别异常：{str(e)}")
-            time.sleep(1)
-    print("⚠️验证码多次识别失败，放弃本次登录")
-    return None
+# 浏览器启动
+driver = webdriver.Chrome(options=options)
+driver.maximize_window()
+driver.get("https://manager-saas-uat.baoanlailou.com/login?redirect=%2Findex")
+wait = WebDriverWait(driver, 15)
+driver.implicitly_wait(2)
+time.sleep(1.5)
 
+# ====================== 1.账号输入框 ======================
+user_xpath = '//input[normalize-space(@placeholder)="请输入账号" and contains(@class,"el-input__inner")]'
+user_elem = wait.until(EC.element_to_be_clickable((By.XPATH, user_xpath)))
+driver.execute_script("arguments[0].removeAttribute('readonly');arguments[0].focus();", user_elem)
+user_elem.clear()
+user_elem.send_keys("ptzh001")
+print("✅账号ptzh001输入完成")
 
-def run_login(page):
-    username = target_username
-    password = target_password
-    print(f"\n======== 当前账号：{username} ========")
-    try:
-        page.goto(short_url, timeout=30000)
+# ====================== 2.密码输入框 ======================
+pwd_xpath = '//input[normalize-space(@placeholder)="请输入密码" and contains(@class,"el-input__inner")]'
+pwd_elem = wait.until(EC.element_to_be_clickable((By.XPATH, pwd_xpath)))
+driver.execute_script("arguments[0].removeAttribute('readonly');arguments[0].focus();", pwd_elem)
+pwd_elem.clear()
+pwd_elem.send_keys("admin123")
+print("✅密码admin123输入完成")
 
-        user_input = page.locator('input[placeholder="请输入账号"]')
-        pwd_input = page.locator('input[placeholder="请输入密码"]')
-        captcha_input = page.locator('input[placeholder="请输入验证码"]')
-        login_btn = page.locator(".btn")
+# ====================== 3.验证码图片（匹配你截图的img标签） ======================
+captcha_img_xpath = '//img[contains(@style,"width: 103px") and contains(@style,"height: 34px")]'
+captcha_img = wait.until(EC.presence_of_element_located((By.XPATH, captcha_img_xpath)))
+# 点击图片刷新验证码，拿到最新base64
+captcha_img.click()
+time.sleep(1)
 
-        user_input.wait_for(timeout=20000)
-        print("✅账号输入框已找到，开始填写账号")
-        user_input.clear()
-        user_input.type(username, delay=50)
-        time.sleep(0.3)
+# 获取base64图片
+src_data = captcha_img.get_attribute("src")
+base64_str = src_data.replace("data:image/png;base64,", "")
+img_bytes = base64.b64decode(base64_str)
+captcha_code = ocr.classification(img_bytes).strip()
+print(f"✅识别验证码：{captcha_code}")
 
-        pwd_input.wait_for(timeout=10000)
-        print("✅密码输入框已找到，开始填写密码")
-        pwd_input.clear()
-        pwd_input.type(password, delay=50)
-        time.sleep(0.3)
+# ======================4.验证码输入框 ======================
+code_xpath = '//input[@name="code" and contains(@class,"el-input__inner")]'
+code_elem = wait.until(EC.element_to_be_clickable((By.XPATH, code_xpath)))
+driver.execute_script("arguments[0].removeAttribute('readonly');arguments[0].focus();", code_elem)
+code_elem.clear()
+code_elem.send_keys(captcha_code)
+print("✅验证码输入完成")
 
-        captcha_code = get_captcha(page)
-        if captcha_code is None:
-            print(f"【{username}】验证码获取失败，停止本次登录")
-            return
+# ======================5.登录按钮 ======================
+login_btn_xpath = '//button[contains(@class,"el-button--primary")]'
+login_btn = wait.until(EC.element_to_be_clickable((By.XPATH, login_btn_xpath)))
+login_btn.click()
+print("✅自动点击登录按钮")
 
-        captcha_input.wait_for(timeout=10000)
-        print(f"✅填入验证码:{captcha_code}")
-        captcha_input.clear()
-        captcha_input.type(captcha_code, delay=50)
-        time.sleep(0.8)
+# 等待登录跳转，断言首页
+try:
+    wait.until(EC.url_contains("/index"))
+    print("🎉登录成功！")
+except Exception as e:
+    print(f"⚠️登录跳转等待异常：{e}")
 
-        login_btn.wait_for(timeout=10000)
-        print("✅点击登录按钮")
-        login_btn.click(timeout=8000)
-        page.wait_for_timeout(3000)
-        print(f"✅【{username}】登录操作执行完毕")
-
-    except Exception as err:
-        print(f"❌【{username}】执行出错：{str(err)}")
-
-
-if __name__ == '__main__':
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
-        context = browser.new_context(ignore_https_errors=True)
-        page = context.new_page()
-        run_login(page)
-
-        input("\n登录流程结束，按回车关闭浏览器 >>>")
-        browser.close()
-        print("\n✅脚本执行完成")
+time.sleep(5)
+# driver.quit()
